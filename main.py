@@ -3,7 +3,6 @@ import uuid
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -13,7 +12,7 @@ from services.ffmpeg_service import crop_video_to_short
 
 load_dotenv()
 
-app = FastAPI(title="ClipperPRO AI")
+app = FastAPI(title="ClipperPRO API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,14 +29,10 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
-@app.get("/", response_class=HTMLResponse)
-async def serve_frontend():
-    html_path = os.path.join(os.path.dirname(__file__), "index.html")
-    try:
-        with open(html_path, "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return "<h1>Error: File index.html tidak ditemukan.</h1>"
+# Endpoint root sekadar untuk cek kesehatan server (Health Check) oleh Render
+@app.get("/")
+async def root_status():
+    return {"status": "Active", "message": "Backend ClipperPRO AI berjalan mulus di Render!"}
 
 @app.post("/api/analyze")
 async def process_and_analyze(file: UploadFile = File(...)):
@@ -84,11 +79,13 @@ async def render_clip(req: RenderRequest):
         
         return {
             "status": "success",
-            "download_url": f"http://127.0.0.1:8000/outputs/{out_filename}"
+            "download_url": f"/outputs/{out_filename}"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    # Port untuk Render diset dinamis
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)

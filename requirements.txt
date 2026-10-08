@@ -1,7 +1,8 @@
 fastapi
 uvicorn
 google-genai
-faster-whisper
+groq
+opencv-python-headless
 python-multipart
 python-dotenv
 numpy

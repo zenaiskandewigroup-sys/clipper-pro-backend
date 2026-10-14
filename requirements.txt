@@ -6,3 +6,4 @@ opencv-python-headless
 python-multipart
 python-dotenv
 numpy
+yt-dlp

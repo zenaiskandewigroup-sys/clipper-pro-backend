@@ -205,8 +205,16 @@ def crop_video_to_short(input_url: str, output_path: str, start_sec: int, end_se
 async def analyze_youtube(req: YTAnalyzeRequest):
     audio_filename = f"outputs/audio_{uuid.uuid4().hex}.m4a"
     try:
-        # 1. Download Audio dari YouTube
-        ydl_opts = {'format': 'bestaudio/best', 'outtmpl': audio_filename, 'quiet': True}
+        # 1. Download Audio dari YouTube (Dengan Penyamaran)
+        ydl_opts = {
+            'format': 'bestaudio/best', 
+            'outtmpl': audio_filename, 
+            'quiet': True,
+            'nocheckcertificate': True,
+            'ignoreerrors': True,
+            'no_warnings': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([req.video_url])
             
@@ -231,8 +239,13 @@ async def render_youtube_clip(req: YTRenderRequest):
         output_filename = f"clip_{uuid.uuid4().hex}.mp4"
         output_path = f"outputs/{output_filename}"
         
-        # Ambil Direct URL dari YouTube
-        ydl_opts = {'format': 'best', 'quiet': True}
+        # Ambil Direct URL dari YouTube (Dengan Penyamaran)
+        ydl_opts = {
+            'format': 'best', 
+            'quiet': True,
+            'nocheckcertificate': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req.video_url, download=False)
             direct_url = info['url']
@@ -252,4 +265,3 @@ async def download_file(filename: str):
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="video/mp4", filename=filename)
     raise HTTPException(status_code=404, detail="File tidak ditemukan")
-

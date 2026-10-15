@@ -37,7 +37,7 @@ class YTRenderRequest(BaseModel):
 
 
 # ==========================================
-# 1. LOGIKA GROQ WHISPER (Dari user)
+# 1. LOGIKA GROQ WHISPER
 # ==========================================
 def transcribe_video(audio_path: str) -> str:
     if not GROQ_API_KEY:
@@ -46,7 +46,6 @@ def transcribe_video(audio_path: str) -> str:
     client = Groq(api_key=GROQ_API_KEY)
     compressed_audio = audio_path + ".mp3"
     
-    # Kompres jadi 32k biar file super kecil untuk Groq
     subprocess.run([
         "ffmpeg", "-y", "-i", audio_path, 
         "-vn", "-c:a", "libmp3lame", "-b:a", "32k", compressed_audio
@@ -83,7 +82,7 @@ def transcribe_video(audio_path: str) -> str:
 
 
 # ==========================================
-# 2. LOGIKA GEMINI (Dari user)
+# 2. LOGIKA GEMINI
 # ==========================================
 def analyze_highlights(transcript_text: str):
     if not GEMINI_API_KEY:
@@ -127,7 +126,7 @@ def analyze_highlights(transcript_text: str):
 
 
 # ==========================================
-# 3. LOGIKA OPENCV & FFMPEG (Dari user)
+# 3. LOGIKA OPENCV & FFMPEG
 # ==========================================
 def crop_video_to_short(input_url: str, output_path: str, start_sec: int, end_sec: int):
     duration = end_sec - start_sec
@@ -135,7 +134,6 @@ def crop_video_to_short(input_url: str, output_path: str, start_sec: int, end_se
     temp_clip = f"outputs/temp_raw_clip_{uid}.mp4"
     temp_tracked = f"outputs/temp_tracked_{uid}.mp4"
     
-    # Menarik HANYA bagian klip yang diminta dari server YouTube (Streaming Bypass)
     cmd_cut = [
         "ffmpeg", "-y", "-ss", str(start_sec), "-i", input_url,
         "-t", str(duration), "-c:v", "copy", "-c:a", "copy", temp_clip
@@ -205,7 +203,7 @@ def crop_video_to_short(input_url: str, output_path: str, start_sec: int, end_se
 async def analyze_youtube(req: YTAnalyzeRequest):
     audio_filename = f"outputs/audio_{uuid.uuid4().hex}.m4a"
     try:
-        # 1. Download Audio dari YouTube (Dengan Penyamaran)
+        # TOPENG BARU: Pura-pura jadi Smart TV atau iPhone
         ydl_opts = {
             'format': 'bestaudio/best', 
             'outtmpl': audio_filename, 
@@ -213,21 +211,17 @@ async def analyze_youtube(req: YTAnalyzeRequest):
             'nocheckcertificate': True,
             'ignoreerrors': True,
             'no_warnings': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+            'extractor_args': {'youtube': {'player_client': ['tv', 'ios']}}
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([req.video_url])
             
-        # 2. Transkrip pakai Groq
         transcript = transcribe_video(audio_filename)
-        
-        # 3. Cari Momen pakai Gemini
         highlights = analyze_highlights(transcript)
         
-        # 4. Hapus sampah
         if os.path.exists(audio_filename): os.remove(audio_filename)
-
         return {"message": "Sukses", "highlights": highlights}
+        
     except Exception as e:
         if os.path.exists(audio_filename): os.remove(audio_filename)
         raise HTTPException(status_code=500, detail=str(e))
@@ -239,20 +233,18 @@ async def render_youtube_clip(req: YTRenderRequest):
         output_filename = f"clip_{uuid.uuid4().hex}.mp4"
         output_path = f"outputs/{output_filename}"
         
-        # Ambil Direct URL dari YouTube (Dengan Penyamaran)
+        # TOPENG BARU: Pura-pura jadi Smart TV atau iPhone
         ydl_opts = {
             'format': 'best', 
             'quiet': True,
             'nocheckcertificate': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+            'extractor_args': {'youtube': {'player_client': ['tv', 'ios']}}
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req.video_url, download=False)
             direct_url = info['url']
             
-        # Potong & Face Tracking pakai fungsi dari user
         crop_video_to_short(direct_url, output_path, req.start_seconds, req.end_seconds)
-        
         return {"download_url": f"/outputs/{output_filename}"}
         
     except Exception as e:

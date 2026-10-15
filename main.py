@@ -28,7 +28,7 @@ app.add_middleware(
 
 os.makedirs("outputs", exist_ok=True)
 
-# Tulis cookies rahasia ke dalam file sistem Render saat server nyala
+# Tulis cookies rahasia ke dalam file sistem Render
 if YOUTUBE_COOKIES:
     with open("cookies.txt", "w") as f:
         f.write(YOUTUBE_COOKIES)
@@ -41,13 +41,12 @@ class YTRenderRequest(BaseModel):
     start_seconds: int
     end_seconds: int
 
-
 # ==========================================
 # 1. LOGIKA GROQ WHISPER
 # ==========================================
 def transcribe_video(audio_path: str) -> str:
     if not GROQ_API_KEY:
-        raise Exception("API Key Groq belum dipasang di environment!")
+        raise Exception("API Key Groq belum dipasang!")
         
     client = Groq(api_key=GROQ_API_KEY)
     compressed_audio = audio_path + ".mp3"
@@ -86,30 +85,28 @@ def transcribe_video(audio_path: str) -> str:
         
     return "\n".join(formatted_transcript)
 
-
 # ==========================================
 # 2. LOGIKA GEMINI
 # ==========================================
 def analyze_highlights(transcript_text: str):
     if not GEMINI_API_KEY:
-        raise Exception("API Key Gemini belum dipasang di environment!")
+        raise Exception("API Key Gemini belum dipasang!")
         
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = f"""
     Kamu adalah Editor Video TikTok Profesional.
     Analisis transkrip ini dan pilih 1-3 momen viral (durasi ideal 30-60 detik).
-    Return HANYA format array JSON valid persis seperti ini, tanpa teks tambahan apapun:
+    Return HANYA format array JSON valid persis seperti ini:
     [
       {{
-        "title": "Judul Menarik",
+        "title": "Judul",
         "start_seconds": 15,
         "end_seconds": 60,
-        "reason": "Alasan klip ini viral",
-        "hook_text": "Kutipan hook pertama",
-        "suggested_titles": ["Opsi Judul 1", "Opsi Judul 2", "Opsi Judul 3"]
+        "reason": "Alasan",
+        "hook_text": "Kutipan",
+        "suggested_titles": ["Judul 1"]
       }}
     ]
-    
     Transkrip:
     {transcript_text}
     """
@@ -128,8 +125,7 @@ def analyze_highlights(transcript_text: str):
     try:
         return json.loads(raw_json.strip())
     except json.JSONDecodeError:
-        raise Exception("Gagal membaca respons dari Gemini karena format tidak sesuai.")
-
+        raise Exception("Gagal membaca respons dari Gemini.")
 
 # ==========================================
 # 3. LOGIKA OPENCV & FFMPEG
@@ -200,27 +196,23 @@ def crop_video_to_short(input_url: str, output_path: str, start_sec: int, end_se
     
     return output_path
 
-
 # ==========================================
 # ENDPOINT API UNTUK VERCEL
 # ==========================================
-
 @app.post("/api/analyze-youtube")
 async def analyze_youtube(req: YTAnalyzeRequest):
     audio_filename = f"outputs/audio_{uuid.uuid4().hex}.m4a"
     try:
-        # TOPENG BARU: Pura-pura jadi Smart TV atau iPhone
         ydl_opts = {
             'format': 'bestaudio/best', 
             'outtmpl': audio_filename, 
             'quiet': True,
             'nocheckcertificate': True,
             'ignoreerrors': True,
-            'no_warnings': True,
-            'extractor_args': {'youtube': {'player_client': ['tv', 'ios']}}
+            'no_warnings': True
+            # TOPENG TV/IOS DIHAPUS BIAR SINKRON SAMA COOKIES WEB
         }
         
-        # SUNTIK SURAT IZIN JIKA ADA
         if os.path.exists("cookies.txt"):
             ydl_opts['cookiefile'] = 'cookies.txt'
             
@@ -237,22 +229,19 @@ async def analyze_youtube(req: YTAnalyzeRequest):
         if os.path.exists(audio_filename): os.remove(audio_filename)
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/api/render-youtube-clip")
 async def render_youtube_clip(req: YTRenderRequest):
     try:
         output_filename = f"clip_{uuid.uuid4().hex}.mp4"
         output_path = f"outputs/{output_filename}"
         
-        # TOPENG BARU: Pura-pura jadi Smart TV atau iPhone
         ydl_opts = {
             'format': 'best', 
             'quiet': True,
-            'nocheckcertificate': True,
-            'extractor_args': {'youtube': {'player_client': ['tv', 'ios']}}
+            'nocheckcertificate': True
+            # TOPENG TV/IOS DIHAPUS BIAR SINKRON SAMA COOKIES WEB
         }
         
-        # SUNTIK SURAT IZIN JIKA ADA
         if os.path.exists("cookies.txt"):
             ydl_opts['cookiefile'] = 'cookies.txt'
             
@@ -265,7 +254,6 @@ async def render_youtube_clip(req: YTRenderRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/outputs/{filename}")
 async def download_file(filename: str):

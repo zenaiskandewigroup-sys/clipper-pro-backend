@@ -204,13 +204,15 @@ async def analyze_youtube(req: YTAnalyzeRequest):
     audio_filename = f"outputs/audio_{uuid.uuid4().hex}.m4a"
     try:
         ydl_opts = {
+            # Ubah format agar lebih fleksibel (fallback)
             'format': 'bestaudio/best', 
             'outtmpl': audio_filename, 
             'quiet': True,
             'nocheckcertificate': True,
             'ignoreerrors': True,
-            'no_warnings': True
-            # TOPENG TV/IOS DIHAPUS BIAR SINKRON SAMA COOKIES WEB
+            'no_warnings': True,
+            # Matikan pengecekan format bawaan yg bikin error
+            'check_formats': False
         }
         
         if os.path.exists("cookies.txt"):
@@ -236,10 +238,11 @@ async def render_youtube_clip(req: YTRenderRequest):
         output_path = f"outputs/{output_filename}"
         
         ydl_opts = {
+            # Ubah format agar lebih fleksibel
             'format': 'best', 
             'quiet': True,
-            'nocheckcertificate': True
-            # TOPENG TV/IOS DIHAPUS BIAR SINKRON SAMA COOKIES WEB
+            'nocheckcertificate': True,
+            'check_formats': False
         }
         
         if os.path.exists("cookies.txt"):
@@ -247,7 +250,14 @@ async def render_youtube_clip(req: YTRenderRequest):
             
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req.video_url, download=False)
-            direct_url = info['url']
+            # Jika ada URL langsung, pakai. Jika tidak, minta dia ekstrak format yg tersedia
+            if 'url' in info:
+                direct_url = info['url']
+            else:
+                 # Fallback: ambil format terbaik yg tersedia
+                 formats = info.get('formats', [])
+                 if not formats: raise Exception("Tidak ada format video yang tersedia.")
+                 direct_url = formats[-1].get('url')
             
         crop_video_to_short(direct_url, output_path, req.start_seconds, req.end_seconds)
         return {"download_url": f"/outputs/{output_filename}"}

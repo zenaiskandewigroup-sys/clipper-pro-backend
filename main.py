@@ -12,9 +12,10 @@ from groq import Groq
 from google import genai
 from google.genai import types
 
-# --- SISTEM KEAMANAN API KEY ---
+# --- SISTEM KEAMANAN API KEY & COOKIES ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES")
 
 app = FastAPI()
 
@@ -26,6 +27,11 @@ app.add_middleware(
 )
 
 os.makedirs("outputs", exist_ok=True)
+
+# Tulis cookies rahasia ke dalam file sistem Render saat server nyala
+if YOUTUBE_COOKIES:
+    with open("cookies.txt", "w") as f:
+        f.write(YOUTUBE_COOKIES)
 
 class YTAnalyzeRequest(BaseModel):
     video_url: str
@@ -213,6 +219,11 @@ async def analyze_youtube(req: YTAnalyzeRequest):
             'no_warnings': True,
             'extractor_args': {'youtube': {'player_client': ['tv', 'ios']}}
         }
+        
+        # SUNTIK SURAT IZIN JIKA ADA
+        if os.path.exists("cookies.txt"):
+            ydl_opts['cookiefile'] = 'cookies.txt'
+            
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([req.video_url])
             
@@ -240,6 +251,11 @@ async def render_youtube_clip(req: YTRenderRequest):
             'nocheckcertificate': True,
             'extractor_args': {'youtube': {'player_client': ['tv', 'ios']}}
         }
+        
+        # SUNTIK SURAT IZIN JIKA ADA
+        if os.path.exists("cookies.txt"):
+            ydl_opts['cookiefile'] = 'cookies.txt'
+            
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req.video_url, download=False)
             direct_url = info['url']

@@ -3,11 +3,10 @@ import sys
 import subprocess
 
 # ==========================================
-# SUNTIKAN ANTI-KADALUARSA (AUTO UPDATE YT-DLP)
-# Wajib ditaruh paling atas sebelum import lain!
+# SUNTIKAN AUTO UPDATE YT-DLP 
 # ==========================================
 try:
-    print("Memaksa update yt-dlp ke versi terbaru untuk menembus format YouTube...")
+    print("Mengecek update yt-dlp...")
     subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"], check=False)
 except:
     pass
@@ -216,15 +215,13 @@ async def analyze_youtube(req: YTAnalyzeRequest):
     audio_base = f"outputs/temp_audio_{uuid.uuid4().hex}" 
     try:
         ydl_opts = {
-            # Format bertingkat: cari khusus audio, kalau gada cari video 720p, kalau gada sedot bebas asal dapet
-            'format': 'bestaudio/best[height<=720]/best', 
+            'format': 'bestaudio/best', 
             'outtmpl': f'{audio_base}.%(ext)s', 
             'quiet': True,
             'nocheckcertificate': True,
-            'ignoreerrors': True,
-            'no_warnings': True,
-            'geo_bypass': True, # Bypass blokir region
-            'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'web']}}
+            'geo_bypass': True,
+            # SOLUSI FINAL: Buang 'android', pakai 'mweb' (Mobile Web) biar 100% sinkron sama Cookies Mises Browser!
+            'extractor_args': {'youtube': {'player_client': ['mweb', 'ios', 'web']}}
         }
         
         if os.path.exists("cookies.txt"):
@@ -233,7 +230,7 @@ async def analyze_youtube(req: YTAnalyzeRequest):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req.video_url, download=True)
             if not info:
-                raise Exception("Gagal mendapatkan info video. Video mungkin diblokir penuh.")
+                raise Exception("Gagal mendapatkan info video.")
             downloaded_file = ydl.prepare_filename(info)
             
         if not os.path.exists(downloaded_file):
@@ -258,11 +255,12 @@ async def render_youtube_clip(req: YTRenderRequest):
         output_path = f"outputs/{output_filename}"
         
         ydl_opts = {
-            'format': 'best', 
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best', 
             'quiet': True,
             'nocheckcertificate': True,
             'geo_bypass': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'web']}}
+            # SOLUSI FINAL DI SINI JUGA
+            'extractor_args': {'youtube': {'player_client': ['mweb', 'ios', 'web']}}
         }
         
         if os.path.exists("cookies.txt"):

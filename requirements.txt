@@ -1,9 +1,7 @@
 fastapi
 uvicorn
-google-genai
-groq
-opencv-python-headless
 python-multipart
-python-dotenv
-numpy
-yt-dlp
+git+https://github.com/yt-dlp/yt-dlp.git
+groq
+google-genai
+opencv-python-headless

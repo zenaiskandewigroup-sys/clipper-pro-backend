@@ -201,18 +201,15 @@ def crop_video_to_short(input_url: str, output_path: str, start_sec: int, end_se
 # ==========================================
 @app.post("/api/analyze-youtube")
 async def analyze_youtube(req: YTAnalyzeRequest):
-    audio_filename = f"outputs/audio_{uuid.uuid4().hex}.m4a"
+    audio_filename = f"outputs/temp_video_{uuid.uuid4().hex}.mp4"
     try:
         ydl_opts = {
-            # Ubah format agar lebih fleksibel (fallback)
-            'format': 'bestaudio/best', 
+            'format': 'b', # Ambil format paling dasar/terbaik yg pasti tersedia
             'outtmpl': audio_filename, 
             'quiet': True,
             'nocheckcertificate': True,
             'ignoreerrors': True,
-            'no_warnings': True,
-            # Matikan pengecekan format bawaan yg bikin error
-            'check_formats': False
+            'no_warnings': True
         }
         
         if os.path.exists("cookies.txt"):
@@ -238,11 +235,9 @@ async def render_youtube_clip(req: YTRenderRequest):
         output_path = f"outputs/{output_filename}"
         
         ydl_opts = {
-            # Ubah format agar lebih fleksibel
-            'format': 'best', 
+            'format': 'b', # Ambil format paling dasar/terbaik yg pasti tersedia
             'quiet': True,
-            'nocheckcertificate': True,
-            'check_formats': False
+            'nocheckcertificate': True
         }
         
         if os.path.exists("cookies.txt"):
@@ -250,14 +245,13 @@ async def render_youtube_clip(req: YTRenderRequest):
             
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req.video_url, download=False)
-            # Jika ada URL langsung, pakai. Jika tidak, minta dia ekstrak format yg tersedia
-            if 'url' in info:
-                direct_url = info['url']
-            else:
-                 # Fallback: ambil format terbaik yg tersedia
-                 formats = info.get('formats', [])
-                 if not formats: raise Exception("Tidak ada format video yang tersedia.")
-                 direct_url = formats[-1].get('url')
+            direct_url = info.get('url')
+            if not direct_url:
+                formats = info.get('formats', [])
+                if formats: direct_url = formats[-1].get('url')
+            
+        if not direct_url:
+            raise Exception("Gagal mendapatkan link video dari YouTube.")
             
         crop_video_to_short(direct_url, output_path, req.start_seconds, req.end_seconds)
         return {"download_url": f"/outputs/{output_filename}"}

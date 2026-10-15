@@ -1,24 +1,23 @@
 import os
 import subprocess
 import uuid
+import json
+import cv2
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import yt_dlp
+from groq import Groq
+from google import genai
+from google.genai import types
 
 # --- SISTEM KEAMANAN API KEY ---
-# Mengambil kunci rahasia dari Environment Variables Render
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not GROQ_API_KEY or not GEMINI_API_KEY:
-    print("WARNING: API KEY GROQ ATAU GEMINI BELUM DIPASANG DI ENVIRONMENT RENDER!")
-# -------------------------------
-
 app = FastAPI()
 
-# Izinkan Vercel ngobrol sama Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,10 +25,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Buat folder output kalau belum ada
 os.makedirs("outputs", exist_ok=True)
 
-# Format Data dari Vercel
 class YTAnalyzeRequest(BaseModel):
     video_url: str
 
@@ -38,84 +35,221 @@ class YTRenderRequest(BaseModel):
     start_seconds: int
     end_seconds: int
 
-# --- ENDPOINT 1: ANALISIS YOUTUBE ---
+
+# ==========================================
+# 1. LOGIKA GROQ WHISPER (Dari user)
+# ==========================================
+def transcribe_video(audio_path: str) -> str:
+    if not GROQ_API_KEY:
+        raise Exception("API Key Groq belum dipasang di environment!")
+        
+    client = Groq(api_key=GROQ_API_KEY)
+    compressed_audio = audio_path + ".mp3"
+    
+    # Kompres jadi 32k biar file super kecil untuk Groq
+    subprocess.run([
+        "ffmpeg", "-y", "-i", audio_path, 
+        "-vn", "-c:a", "libmp3lame", "-b:a", "32k", compressed_audio
+    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    with open(compressed_audio, "rb") as audio_file:
+        transcription = client.audio.transcriptions.create(
+            file=(os.path.basename(compressed_audio), audio_file.read()),
+            model="whisper-large-v3",
+            response_format="verbose_json",
+        )
+        
+    if os.path.exists(compressed_audio): os.remove(compressed_audio)
+        
+    formatted_transcript = []
+    segments = getattr(transcription, 'segments', [])
+    if not segments and isinstance(transcription, dict):
+        segments = transcription.get('segments', [])
+        
+    if segments:
+        for segment in segments:
+            start_time = segment['start'] if isinstance(segment, dict) else segment.start
+            end_time = segment['end'] if isinstance(segment, dict) else segment.end
+            text = segment['text'] if isinstance(segment, dict) else segment.text
+            start_min, start_sec = int(start_time // 60), int(start_time % 60)
+            end_min, end_sec = int(end_time // 60), int(end_time % 60)
+            timestamp = f"[{start_min:02d}:{start_sec:02d} - {end_min:02d}:{end_sec:02d}]"
+            formatted_transcript.append(f"{timestamp} {text.strip()}")
+    else:
+        text = transcription.text if hasattr(transcription, 'text') else transcription.get('text', '')
+        formatted_transcript.append(f"[00:00 - End] {text}")
+        
+    return "\n".join(formatted_transcript)
+
+
+# ==========================================
+# 2. LOGIKA GEMINI (Dari user)
+# ==========================================
+def analyze_highlights(transcript_text: str):
+    if not GEMINI_API_KEY:
+        raise Exception("API Key Gemini belum dipasang di environment!")
+        
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    prompt = f"""
+    Kamu adalah Editor Video TikTok Profesional.
+    Analisis transkrip ini dan pilih 1-3 momen viral (durasi ideal 30-60 detik).
+    Return HANYA format array JSON valid persis seperti ini, tanpa teks tambahan apapun:
+    [
+      {{
+        "title": "Judul Menarik",
+        "start_seconds": 15,
+        "end_seconds": 60,
+        "reason": "Alasan klip ini viral",
+        "hook_text": "Kutipan hook pertama",
+        "suggested_titles": ["Opsi Judul 1", "Opsi Judul 2", "Opsi Judul 3"]
+      }}
+    ]
+    
+    Transkrip:
+    {transcript_text}
+    """
+    
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(response_mime_type="application/json")
+    )
+    
+    raw_json = response.text.strip()
+    if raw_json.startswith("```json"): raw_json = raw_json[7:]
+    elif raw_json.startswith("```"): raw_json = raw_json[3:]
+    if raw_json.endswith("```"): raw_json = raw_json[:-3]
+        
+    try:
+        return json.loads(raw_json.strip())
+    except json.JSONDecodeError:
+        raise Exception("Gagal membaca respons dari Gemini karena format tidak sesuai.")
+
+
+# ==========================================
+# 3. LOGIKA OPENCV & FFMPEG (Dari user)
+# ==========================================
+def crop_video_to_short(input_url: str, output_path: str, start_sec: int, end_sec: int):
+    duration = end_sec - start_sec
+    uid = str(uuid.uuid4())[:6]
+    temp_clip = f"outputs/temp_raw_clip_{uid}.mp4"
+    temp_tracked = f"outputs/temp_tracked_{uid}.mp4"
+    
+    # Menarik HANYA bagian klip yang diminta dari server YouTube (Streaming Bypass)
+    cmd_cut = [
+        "ffmpeg", "-y", "-ss", str(start_sec), "-i", input_url,
+        "-t", str(duration), "-c:v", "copy", "-c:a", "copy", temp_clip
+    ]
+    subprocess.run(cmd_cut, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    cap = cv2.VideoCapture(temp_clip)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps == 0 or fps != fps: fps = 30
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    target_width = int(height * 9 / 16)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(temp_tracked, fourcc, fps, (target_width, height))
+    
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    last_center_x = width // 2
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret: break
+            
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+        
+        if len(faces) > 0:
+            faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
+            x, y, w, h = faces[0]
+            current_center_x = x + w // 2
+            last_center_x = int(last_center_x * 0.9 + current_center_x * 0.1)
+            
+        x1 = max(0, last_center_x - target_width // 2)
+        x2 = x1 + target_width
+        
+        if x2 > width:
+            x2 = width
+            x1 = width - target_width
+        if x1 < 0:
+            x1 = 0
+            x2 = target_width
+            
+        cropped_frame = frame[0:height, x1:x2]
+        out.write(cropped_frame)
+        
+    cap.release()
+    out.release()
+    
+    cmd_merge = [
+        "ffmpeg", "-y", "-i", temp_tracked, "-i", temp_clip,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+        "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", output_path
+    ]
+    subprocess.run(cmd_merge, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    if os.path.exists(temp_clip): os.remove(temp_clip)
+    if os.path.exists(temp_tracked): os.remove(temp_tracked)
+    
+    return output_path
+
+
+# ==========================================
+# ENDPOINT API UNTUK VERCEL
+# ==========================================
+
 @app.post("/api/analyze-youtube")
 async def analyze_youtube(req: YTAnalyzeRequest):
+    audio_filename = f"outputs/audio_{uuid.uuid4().hex}.m4a"
     try:
-        # 1. Sedot audio saja dari YouTube (Biar hemat RAM Render)
-        audio_filename = f"outputs/audio_{uuid.uuid4().hex}.m4a"
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': audio_filename,
-            'quiet': True,
-        }
-        
+        # 1. Download Audio dari YouTube
+        ydl_opts = {'format': 'bestaudio/best', 'outtmpl': audio_filename, 'quiet': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([req.video_url])
             
-        # ==========================================
-        # MASUKIN SCRIPT GROQ & GEMINI LU DI SINI
-        # Pastikan saat manggil API, lu pake variabel:
-        # GROQ_API_KEY dan GEMINI_API_KEY
-        # ==========================================
+        # 2. Transkrip pakai Groq
+        transcript = transcribe_video(audio_filename)
         
-        # Hapus audio setelah ditranskrip biar hardisk Render gak penuh
-        if os.path.exists(audio_filename):
-            os.remove(audio_filename)
+        # 3. Cari Momen pakai Gemini
+        highlights = analyze_highlights(transcript)
+        
+        # 4. Hapus sampah
+        if os.path.exists(audio_filename): os.remove(audio_filename)
 
-        # Output Dummy (Ganti pakai hasil output dari AI Gemini lu nanti)
-        return {
-            "message": "Sukses",
-            "highlights": [
-                {
-                    "title": "Momen Epik 1",
-                    "hook_text": "Ini adalah kutipan viral pertama...",
-                    "start_seconds": 30, # Contoh: mulai di detik 30
-                    "end_seconds": 90,   # Contoh: selesai di detik 90
-                    "suggested_titles": ["Judul Viral A", "Judul Viral B"]
-                }
-            ]
-        }
+        return {"message": "Sukses", "highlights": highlights}
     except Exception as e:
+        if os.path.exists(audio_filename): os.remove(audio_filename)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- ENDPOINT 2: POTONG & RENDER VIDEO ---
 @app.post("/api/render-youtube-clip")
 async def render_youtube_clip(req: YTRenderRequest):
     try:
-        output_filename = f"outputs/clip_{uuid.uuid4().hex}.mp4"
+        output_filename = f"clip_{uuid.uuid4().hex}.mp4"
+        output_path = f"outputs/{output_filename}"
         
-        # 1. Dapatkan Link Streaming Langsung dari YouTube (Bypass Download Penuh)
+        # Ambil Direct URL dari YouTube
         ydl_opts = {'format': 'best', 'quiet': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req.video_url, download=False)
             direct_url = info['url']
             
-        # 2. Potong langsung dari Cloud pakai FFmpeg (Hanya butuh RAM super kecil!)
-        # -ss = mulai, -to = akhir, -vf crop = potong vertikal 9:16
-        cmd = [
-            "ffmpeg", "-y",
-            "-ss", str(req.start_seconds),
-            "-to", str(req.end_seconds),
-            "-i", direct_url,
-            "-vf", "crop=ih*9/16:ih", 
-            "-c:a", "copy",
-            output_filename
-        ]
+        # Potong & Face Tracking pakai fungsi dari user
+        crop_video_to_short(direct_url, output_path, req.start_seconds, req.end_seconds)
         
-        subprocess.run(cmd, check=True)
-        
-        # Kembalikan link download ke Vercel
-        return {"download_url": f"/{output_filename}"}
+        return {"download_url": f"/outputs/{output_filename}"}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- ENDPOINT DOWNLOAD ---
+
 @app.get("/outputs/{filename}")
 async def download_file(filename: str):
     file_path = os.path.join("outputs", filename)
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="video/mp4", filename=filename)
     raise HTTPException(status_code=404, detail="File tidak ditemukan")
+

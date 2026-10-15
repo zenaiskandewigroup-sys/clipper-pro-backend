@@ -204,12 +204,14 @@ async def analyze_youtube(req: YTAnalyzeRequest):
     audio_filename = f"outputs/temp_video_{uuid.uuid4().hex}.mp4"
     try:
         ydl_opts = {
-            'format': 'b', # Ambil format paling dasar/terbaik yg pasti tersedia
+            'format': 'bestaudio/best/worst', 
             'outtmpl': audio_filename, 
             'quiet': True,
             'nocheckcertificate': True,
             'ignoreerrors': True,
-            'no_warnings': True
+            'no_warnings': True,
+            # MASK ANDROID: Kunci buat nembus "Requested format not available"
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
         }
         
         if os.path.exists("cookies.txt"):
@@ -235,9 +237,11 @@ async def render_youtube_clip(req: YTRenderRequest):
         output_path = f"outputs/{output_filename}"
         
         ydl_opts = {
-            'format': 'b', # Ambil format paling dasar/terbaik yg pasti tersedia
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best/worst', 
             'quiet': True,
-            'nocheckcertificate': True
+            'nocheckcertificate': True,
+            # MASK ANDROID
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
         }
         
         if os.path.exists("cookies.txt"):

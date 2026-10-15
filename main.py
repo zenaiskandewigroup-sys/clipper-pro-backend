@@ -1,91 +1,121 @@
 import os
+import subprocess
 import uuid
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from dotenv import load_dotenv
+import yt_dlp
 
-from services.whisper_service import transcribe_video
-from services.gemini_service import analyze_highlights
-from services.ffmpeg_service import crop_video_to_short
+# --- SISTEM KEAMANAN API KEY ---
+# Mengambil kunci rahasia dari Environment Variables Render
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-load_dotenv()
+if not GROQ_API_KEY or not GEMINI_API_KEY:
+    print("WARNING: API KEY GROQ ATAU GEMINI BELUM DIPASANG DI ENVIRONMENT RENDER!")
+# -------------------------------
 
-app = FastAPI(title="ClipperPRO API")
+app = FastAPI()
 
+# Izinkan Vercel ngobrol sama Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = os.path.abspath("./uploads")
-OUTPUT_DIR = os.path.abspath("./outputs")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Buat folder output kalau belum ada
+os.makedirs("outputs", exist_ok=True)
 
-app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
+# Format Data dari Vercel
+class YTAnalyzeRequest(BaseModel):
+    video_url: str
 
-# Endpoint root sekadar untuk cek kesehatan server (Health Check) oleh Render
-@app.get("/")
-async def root_status():
-    return {"status": "Active", "message": "Backend ClipperPRO AI berjalan mulus di Render!"}
-
-@app.post("/api/analyze")
-async def process_and_analyze(file: UploadFile = File(...)):
-    file_id = str(uuid.uuid4())[:8]
-    saved_filename = f"{file_id}_{file.filename}"
-    video_path = os.path.join(UPLOAD_DIR, saved_filename)
-    
-    with open(video_path, "wb") as buffer:
-        buffer.write(await file.read())
-        
-    try:
-        transcript = transcribe_video(video_path)
-        highlights = analyze_highlights(transcript)
-        
-        return {
-            "status": "success",
-            "video_id": saved_filename,
-            "highlights": highlights
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-class RenderRequest(BaseModel):
-    video_id: str
+class YTRenderRequest(BaseModel):
+    video_url: str
     start_seconds: int
     end_seconds: int
 
-@app.post("/api/render-clip")
-async def render_clip(req: RenderRequest):
-    input_video_path = os.path.join(UPLOAD_DIR, req.video_id)
-    if not os.path.exists(input_video_path):
-        raise HTTPException(status_code=404, detail="File video tidak ditemukan.")
-        
-    out_filename = f"short_{uuid.uuid4()[:6]}_{req.video_id}"
-    output_video_path = os.path.join(OUTPUT_DIR, out_filename)
-    
+# --- ENDPOINT 1: ANALISIS YOUTUBE ---
+@app.post("/api/analyze-youtube")
+async def analyze_youtube(req: YTAnalyzeRequest):
     try:
-        crop_video_to_short(
-            input_path=input_video_path,
-            output_path=output_video_path,
-            start_sec=req.start_seconds,
-            end_sec=req.end_seconds
-        )
+        # 1. Sedot audio saja dari YouTube (Biar hemat RAM Render)
+        audio_filename = f"outputs/audio_{uuid.uuid4().hex}.m4a"
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': audio_filename,
+            'quiet': True,
+        }
         
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([req.video_url])
+            
+        # ==========================================
+        # MASUKIN SCRIPT GROQ & GEMINI LU DI SINI
+        # Pastikan saat manggil API, lu pake variabel:
+        # GROQ_API_KEY dan GEMINI_API_KEY
+        # ==========================================
+        
+        # Hapus audio setelah ditranskrip biar hardisk Render gak penuh
+        if os.path.exists(audio_filename):
+            os.remove(audio_filename)
+
+        # Output Dummy (Ganti pakai hasil output dari AI Gemini lu nanti)
         return {
-            "status": "success",
-            "download_url": f"/outputs/{out_filename}"
+            "message": "Sukses",
+            "highlights": [
+                {
+                    "title": "Momen Epik 1",
+                    "hook_text": "Ini adalah kutipan viral pertama...",
+                    "start_seconds": 30, # Contoh: mulai di detik 30
+                    "end_seconds": 90,   # Contoh: selesai di detik 90
+                    "suggested_titles": ["Judul Viral A", "Judul Viral B"]
+                }
+            ]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-if __name__ == "__main__":
-    import uvicorn
-    # Port untuk Render diset dinamis
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+
+# --- ENDPOINT 2: POTONG & RENDER VIDEO ---
+@app.post("/api/render-youtube-clip")
+async def render_youtube_clip(req: YTRenderRequest):
+    try:
+        output_filename = f"outputs/clip_{uuid.uuid4().hex}.mp4"
+        
+        # 1. Dapatkan Link Streaming Langsung dari YouTube (Bypass Download Penuh)
+        ydl_opts = {'format': 'best', 'quiet': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(req.video_url, download=False)
+            direct_url = info['url']
+            
+        # 2. Potong langsung dari Cloud pakai FFmpeg (Hanya butuh RAM super kecil!)
+        # -ss = mulai, -to = akhir, -vf crop = potong vertikal 9:16
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(req.start_seconds),
+            "-to", str(req.end_seconds),
+            "-i", direct_url,
+            "-vf", "crop=ih*9/16:ih", 
+            "-c:a", "copy",
+            output_filename
+        ]
+        
+        subprocess.run(cmd, check=True)
+        
+        # Kembalikan link download ke Vercel
+        return {"download_url": f"/{output_filename}"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- ENDPOINT DOWNLOAD ---
+@app.get("/outputs/{filename}")
+async def download_file(filename: str):
+    file_path = os.path.join("outputs", filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path, media_type="video/mp4", filename=filename)
+    raise HTTPException(status_code=404, detail="File tidak ditemukan")

@@ -51,6 +51,7 @@ def transcribe_video(audio_path: str) -> str:
     client = Groq(api_key=GROQ_API_KEY)
     compressed_audio = audio_path + ".mp3"
     
+    # Gunakan check=True agar proses berhenti jika ffmpeg gagal (Saran ChatGPT)
     subprocess.run([
         "ffmpeg", "-y", "-i", audio_path, 
         "-vn", "-c:a", "libmp3lame", "-b:a", "32k", compressed_audio
@@ -140,7 +141,8 @@ def crop_video_to_short(input_url: str, output_path: str, start_sec: int, end_se
         "ffmpeg", "-y", "-ss", str(start_sec), "-i", input_url,
         "-t", str(duration), "-c:v", "copy", "-c:a", "copy", temp_clip
     ]
-    subprocess.run(cmd_cut, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Menggunakan check=True sesuai saran
+    subprocess.run(cmd_cut, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
     cap = cv2.VideoCapture(temp_clip)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -189,7 +191,7 @@ def crop_video_to_short(input_url: str, output_path: str, start_sec: int, end_se
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", output_path
     ]
-    subprocess.run(cmd_merge, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(cmd_merge, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
     if os.path.exists(temp_clip): os.remove(temp_clip)
     if os.path.exists(temp_tracked): os.remove(temp_tracked)
@@ -201,33 +203,47 @@ def crop_video_to_short(input_url: str, output_path: str, start_sec: int, end_se
 # ==========================================
 @app.post("/api/analyze-youtube")
 async def analyze_youtube(req: YTAnalyzeRequest):
-    audio_filename = f"outputs/temp_video_{uuid.uuid4().hex}.mp4"
+    # Nama file generik tanpa ekstensi yang dipaksakan
+    audio_base = f"outputs/temp_audio_{uuid.uuid4().hex}" 
     try:
         ydl_opts = {
-            'format': 'bestaudio/best/worst', 
-            'outtmpl': audio_filename, 
+            # FORMAT PALING AMAN: Jangan paksa format tertentu. Biarkan yt-dlp memilih yang TERSEDIA.
+            'format': 'best', 
+            # Jangan tambahkan ekstensi .mp4 atau .m4a secara hardcode. Biarkan yt-dlp yang menentukan.
+            'outtmpl': f'{audio_base}.%(ext)s', 
             'quiet': True,
             'nocheckcertificate': True,
             'ignoreerrors': True,
-            'no_warnings': True,
-            # MASK ANDROID: Kunci buat nembus "Requested format not available"
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+            'no_warnings': True
+            # Menghapus 'extractor_args' untuk membiarkan yt-dlp menggunakan defaultnya yang paling stabil dengan cookies.
         }
         
         if os.path.exists("cookies.txt"):
             ydl_opts['cookiefile'] = 'cookies.txt'
             
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([req.video_url])
+            # Menggunakan extract_info untuk mendownload dan mendapatkan nama file aslinya
+            info = ydl.extract_info(req.video_url, download=True)
+            if not info:
+                raise Exception("Gagal mendapatkan info video. Video mungkin dibatasi.")
             
-        transcript = transcribe_video(audio_filename)
+            # Mencari file yang baru saja didownload berdasarkan judul/id
+            downloaded_file = ydl.prepare_filename(info)
+            
+        if not os.path.exists(downloaded_file):
+             raise Exception(f"File tidak ditemukan setelah download: {downloaded_file}")
+
+        transcript = transcribe_video(downloaded_file)
         highlights = analyze_highlights(transcript)
         
-        if os.path.exists(audio_filename): os.remove(audio_filename)
+        if os.path.exists(downloaded_file): os.remove(downloaded_file)
         return {"message": "Sukses", "highlights": highlights}
         
     except Exception as e:
-        if os.path.exists(audio_filename): os.remove(audio_filename)
+        # Bersihkan file sampah jika error
+        for ext in ['mp4', 'm4a', 'webm', 'mp3']:
+            temp_file = f"{audio_base}.{ext}"
+            if os.path.exists(temp_file): os.remove(temp_file)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/render-youtube-clip")
@@ -237,11 +253,11 @@ async def render_youtube_clip(req: YTRenderRequest):
         output_path = f"outputs/{output_filename}"
         
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best/worst', 
+            # FORMAT PALING AMAN
+            'format': 'best', 
             'quiet': True,
-            'nocheckcertificate': True,
-            # MASK ANDROID
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+            'nocheckcertificate': True
+            # Menghapus 'extractor_args'
         }
         
         if os.path.exists("cookies.txt"):
@@ -249,13 +265,19 @@ async def render_youtube_clip(req: YTRenderRequest):
             
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req.video_url, download=False)
+            
+            # Cari URL langsung di info
             direct_url = info.get('url')
+            
+            # Fallback ekstra keras: Jika 'url' tidak ada, cari di dalam list 'formats'
             if not direct_url:
                 formats = info.get('formats', [])
-                if formats: direct_url = formats[-1].get('url')
+                if formats:
+                    # Ambil URL dari format terakhir (biasanya kualitas terbaik)
+                    direct_url = formats[-1].get('url')
             
         if not direct_url:
-            raise Exception("Gagal mendapatkan link video dari YouTube.")
+            raise Exception("Gagal mengekstrak direct URL video dari YouTube.")
             
         crop_video_to_short(direct_url, output_path, req.start_seconds, req.end_seconds)
         return {"download_url": f"/outputs/{output_filename}"}

@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 python-multipart
-git+https://github.com/yt-dlp/yt-dlp.git
+https://github.com/yt-dlp/yt-dlp/archive/master.zip
 groq
 google-genai
 opencv-python-headless

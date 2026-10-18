@@ -1,16 +1,6 @@
 import os
 import sys
 import subprocess
-
-# ==========================================
-# SUNTIKAN AUTO UPDATE YT-DLP 
-# ==========================================
-try:
-    print("Mengecek update yt-dlp...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"], check=False)
-except:
-    pass
-
 import uuid
 import json
 import cv2
@@ -22,6 +12,15 @@ import yt_dlp
 from groq import Groq
 from google import genai
 from google.genai import types
+
+# ==========================================
+# SUNTIKAN AUTO UPDATE YT-DLP 
+# ==========================================
+try:
+    print("Mengecek update yt-dlp...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"], check=False)
+except:
+    pass
 
 # --- SISTEM KEAMANAN API KEY & COOKIES ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -215,26 +214,36 @@ async def analyze_youtube(req: YTAnalyzeRequest):
     audio_base = f"outputs/temp_audio_{uuid.uuid4().hex}" 
     try:
         ydl_opts = {
-            'format': 'bestaudio/best', 
+            'format': 'best', 
             'outtmpl': f'{audio_base}.%(ext)s', 
-            'quiet': True,
+            'quiet': False, # DIBIKIN FALSE BIAR LOG NYA MUNCUL SEMUA
             'nocheckcertificate': True,
+            'ignoreerrors': True,
             'geo_bypass': True,
-            # SOLUSI FINAL: Buang 'android', pakai 'mweb' (Mobile Web) biar 100% sinkron sama Cookies Mises Browser!
-            'extractor_args': {'youtube': {'player_client': ['mweb', 'ios', 'web']}}
+            # EXTRACTOR ARGS DIHAPUS TOTAL BIAR GAK ERROR PO TOKEN
         }
         
         if os.path.exists("cookies.txt"):
             ydl_opts['cookiefile'] = 'cookies.txt'
             
+        print(f"\n=== SEDANG MENGECEK FORMAT UNTUK VIDEO: {req.video_url} ===")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(req.video_url, download=True)
-            if not info:
-                raise Exception("Gagal mendapatkan info video.")
+            # BAGIAN INI YANG JADI PENGGANTI --list-formats
+            info = ydl.extract_info(req.video_url, download=False)
+            if info and 'formats' in info:
+                print("\n>>> DAFTAR FORMAT YANG DIIZINKAN YOUTUBE UNTUK DIDOWNLOAD SERVMER INI:")
+                for f in info['formats']:
+                    print(f"- Extensi: {f.get('ext')}, Resolusi: {f.get('resolution', 'audio only')}, Note: {f.get('format_note', '')}")
+                print("==============================================================\n")
+            else:
+                print("\n>>> PARAH! YOUTUBE SAMA SEKALI GAK NGASIH FORMAT VIDEO/AUDIO KE SERVER INI!\n")
+
+            # Lanjut download file benerannya
+            ydl.download([req.video_url])
             downloaded_file = ydl.prepare_filename(info)
             
         if not os.path.exists(downloaded_file):
-             raise Exception(f"File tidak ditemukan setelah download.")
+             raise Exception(f"File gagal didownload karena YouTube memblokir akses video.")
 
         transcript = transcribe_video(downloaded_file)
         highlights = analyze_highlights(transcript)
@@ -243,7 +252,7 @@ async def analyze_youtube(req: YTAnalyzeRequest):
         return {"message": "Sukses", "highlights": highlights}
         
     except Exception as e:
-        for ext in ['mp4', 'm4a', 'webm', 'mp3']:
+        for ext in ['mp4', 'm4a', 'webm', 'mp3', 'webp', 'jpg']:
             temp_file = f"{audio_base}.{ext}"
             if os.path.exists(temp_file): os.remove(temp_file)
         raise HTTPException(status_code=500, detail=str(e))
@@ -255,12 +264,10 @@ async def render_youtube_clip(req: YTRenderRequest):
         output_path = f"outputs/{output_filename}"
         
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best', 
+            'format': 'best', 
             'quiet': True,
             'nocheckcertificate': True,
             'geo_bypass': True,
-            # SOLUSI FINAL DI SINI JUGA
-            'extractor_args': {'youtube': {'player_client': ['mweb', 'ios', 'web']}}
         }
         
         if os.path.exists("cookies.txt"):
@@ -288,3 +295,4 @@ async def download_file(filename: str):
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="video/mp4", filename=filename)
     raise HTTPException(status_code=404, detail="File tidak ditemukan")
+
